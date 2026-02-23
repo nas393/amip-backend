@@ -5,106 +5,134 @@ import time
 
 app = FastAPI()
 
-# ---- ENABLE CORS (Allows Vercel frontend to call this API) ----
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For now allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---- CACHE SETTINGS ----
-CACHE_DURATION = 600  # 10 minutes
-fx_cache = {
-    "rate": None,
+CACHE_DURATION = 600
+
+cache = {
+    "fx": None,
+    "fx_prev": None,
+    "commodities": None,
     "timestamp": 0
 }
 
-
-@app.get("/")
-def home():
-    return {"message": "Angola Market Intelligence API is running"}
-
-
-@app.get("/debug")
-def debug():
-    return {
-        "cache_active": fx_cache["rate"] is not None
-    }
-
+# ------------------ FX ------------------
 
 def fetch_usd_aoa():
     try:
         url = "https://open.er-api.com/v6/latest/USD"
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        r = requests.get(url, timeout=10).json()
 
-        if data.get("result") != "success":
+        if r.get("result") != "success":
             return None
 
-        usd_to_aoa = data["rates"].get("AOA")
+        return round(r["rates"].get("AOA"), 2)
 
-        if not usd_to_aoa:
-            return None
-
-        return round(usd_to_aoa, 2)
-
-    except Exception:
+    except:
         return None
 
 
-def get_cached_fx():
-    current_time = time.time()
+# ------------------ Commodities ------------------
+# Using free stooq.com API (no key)
 
-    # If cache valid, return it
-    if (
-        fx_cache["rate"] is not None and
-        current_time - fx_cache["timestamp"] < CACHE_DURATION
-    ):
-        return {
-            "USD/AOA": fx_cache["rate"],
-            "cached": True
-        }
+def fetch_commodity(symbol):
+    try:
+        url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
+        r = requests.get(url, timeout=10).text.split(",")
+        return float(r[6])
+    except:
+        return None
 
-    # Otherwise fetch fresh data
-    fresh_rate = fetch_usd_aoa()
 
-    if fresh_rate:
-        fx_cache["rate"] = fresh_rate
-        fx_cache["timestamp"] = current_time
-        return {
-            "USD/AOA": fresh_rate,
-            "cached": False
-        }
+def fetch_commodities():
+    return {
+        "Wheat": fetch_commodity("zw.f"),
+        "Sugar": fetch_commodity("sb.f"),
+        "Rice": fetch_commodity("zr.f"),
+        "Maize": fetch_commodity("zc.f"),
+        "Flour": fetch_commodity("zw.f"),  # proxy wheat
+        "Margarine": None  # no direct public feed, placeholder
+    }
 
-    # If API fails but we have old cache, serve old cache
-    if fx_cache["rate"]:
-        return {
-            "USD/AOA": fx_cache["rate"],
-            "cached": True
-        }
 
-    return {"error": "Unable to fetch FX data"}
+# ------------------ Risk Model ------------------
+
+def calculate_risk(fx, fx_prev, commodities):
+    fx_volatility = 0
+    if fx_prev:
+        fx_volatility = abs((fx - fx_prev) / fx_prev) * 100
+
+    commodity_pressure = 0
+    valid_prices = [v for v in commodities.values() if v]
+    if valid_prices:
+        commodity_pressure = sum(valid_prices) / len(valid_prices)
+
+    risk_score = (
+        fx_volatility * 3 +
+        (commodity_pressure / 100) * 20
+    )
+
+    return round(min(risk_score, 100), 2)
+
+
+# ------------------ API ENDPOINTS ------------------
+
+@app.get("/")
+def home():
+    return {"message": "Intelligence Engine Active"}
 
 
 @app.get("/fx")
 def fx():
-    return get_cached_fx()
+    current_time = time.time()
+
+    if cache["fx"] and current_time - cache["timestamp"] < CACHE_DURATION:
+        return {"USD/AOA": cache["fx"], "cached": True}
+
+    fx_value = fetch_usd_aoa()
+
+    if fx_value:
+        cache["fx_prev"] = cache["fx"]
+        cache["fx"] = fx_value
+        cache["timestamp"] = current_time
+        return {"USD/AOA": fx_value, "cached": False}
+
+    return {"error": "FX unavailable"}
+
+
+@app.get("/commodities")
+def commodities():
+    current_time = time.time()
+
+    if cache["commodities"] and current_time - cache["timestamp"] < CACHE_DURATION:
+        return cache["commodities"]
+
+    data = fetch_commodities()
+
+    if data:
+        cache["commodities"] = data
+        cache["timestamp"] = current_time
+        return data
+
+    return {"error": "Commodity data unavailable"}
 
 
 @app.get("/risk")
 def risk():
-    fx_vol = 50
-    commodity_vol = 40
-    news_score = 30
-    weather_score = 20
+    if not cache["fx"]:
+        return {"risk": "insufficient data"}
 
-    risk_score = (
-        fx_vol * 0.30 +
-        commodity_vol * 0.30 +
-        news_score * 0.25 +
-        weather_score * 0.15
+    commodities_data = cache["commodities"] or {}
+    risk_score = calculate_risk(
+        cache["fx"],
+        cache["fx_prev"],
+        commodities_data
     )
 
-    return {"Angola Risk Score": round(risk_score, 2)}
+    return {"Angola Risk Score": risk_score}
