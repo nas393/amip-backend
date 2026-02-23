@@ -25,34 +25,34 @@ def debug():
 
 
 def fetch_fx_from_api():
-    url = "https://api.exchangerate.host/latest?base=USD&symbols=AOA"
-    response = requests.get(url, timeout=10)
-    data = response.json()
+    try:
+        # Frankfurter uses EUR as base
+        url = "https://api.frankfurter.app/latest?from=EUR&to=USD,AOA"
+        response = requests.get(url, timeout=10)
+        data = response.json()
 
-    if "rates" not in data or "AOA" not in data["rates"]:
+        if "rates" not in data:
+            return None
+
+        eur_to_usd = data["rates"]["USD"]
+        eur_to_aoa = data["rates"]["AOA"]
+
+        # Calculate USD → AOA
+        usd_to_aoa = eur_to_aoa / eur_to_usd
+
+        return {
+            "USD/AOA": round(usd_to_aoa, 2),
+            "EUR/AOA": round(eur_to_aoa, 2)
+        }
+
+    except Exception:
         return None
-
-    usd_to_aoa = data["rates"]["AOA"]
-
-    # Now fetch EUR
-    url_eur = "https://api.exchangerate.host/latest?base=EUR&symbols=AOA"
-    response_eur = requests.get(url_eur, timeout=10)
-    data_eur = response_eur.json()
-
-    if "rates" not in data_eur or "AOA" not in data_eur["rates"]:
-        return None
-
-    eur_to_aoa = data_eur["rates"]["AOA"]
-
-    return {
-        "USD/AOA": round(usd_to_aoa, 2),
-        "EUR/AOA": round(eur_to_aoa, 2)
-    }
 
 
 def get_cached_fx():
     current_time = time.time()
 
+    # Serve cache if valid
     if (
         fx_cache["data"] is not None and
         current_time - fx_cache["timestamp"] < CACHE_DURATION
@@ -62,6 +62,7 @@ def get_cached_fx():
             "cached": True
         }
 
+    # Fetch fresh
     fresh_data = fetch_fx_from_api()
 
     if fresh_data:
@@ -72,6 +73,7 @@ def get_cached_fx():
             "cached": False
         }
 
+    # Fallback to old cache
     if fx_cache["data"]:
         return {
             **fx_cache["data"],
