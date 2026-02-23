@@ -4,10 +4,9 @@ import time
 
 app = FastAPI()
 
-# ---- CACHE SETTINGS ----
 CACHE_DURATION = 600  # 10 minutes
 fx_cache = {
-    "data": None,
+    "rate": None,
     "timestamp": 0
 }
 
@@ -20,30 +19,25 @@ def home():
 @app.get("/debug")
 def debug():
     return {
-        "cache_active": fx_cache["data"] is not None
+        "cache_active": fx_cache["rate"] is not None
     }
 
 
-def fetch_fx_from_api():
+def fetch_usd_aoa():
     try:
-        # Frankfurter uses EUR as base
-        url = "https://api.frankfurter.app/latest?from=EUR&to=USD,AOA"
+        url = "https://open.er-api.com/v6/latest/USD"
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        if "rates" not in data:
+        if data["result"] != "success":
             return None
 
-        eur_to_usd = data["rates"]["USD"]
-        eur_to_aoa = data["rates"]["AOA"]
+        usd_to_aoa = data["rates"].get("AOA")
 
-        # Calculate USD → AOA
-        usd_to_aoa = eur_to_aoa / eur_to_usd
+        if not usd_to_aoa:
+            return None
 
-        return {
-            "USD/AOA": round(usd_to_aoa, 2),
-            "EUR/AOA": round(eur_to_aoa, 2)
-        }
+        return round(usd_to_aoa, 2)
 
     except Exception:
         return None
@@ -52,31 +46,28 @@ def fetch_fx_from_api():
 def get_cached_fx():
     current_time = time.time()
 
-    # Serve cache if valid
     if (
-        fx_cache["data"] is not None and
+        fx_cache["rate"] is not None and
         current_time - fx_cache["timestamp"] < CACHE_DURATION
     ):
         return {
-            **fx_cache["data"],
+            "USD/AOA": fx_cache["rate"],
             "cached": True
         }
 
-    # Fetch fresh
-    fresh_data = fetch_fx_from_api()
+    fresh_rate = fetch_usd_aoa()
 
-    if fresh_data:
-        fx_cache["data"] = fresh_data
+    if fresh_rate:
+        fx_cache["rate"] = fresh_rate
         fx_cache["timestamp"] = current_time
         return {
-            **fresh_data,
+            "USD/AOA": fresh_rate,
             "cached": False
         }
 
-    # Fallback to old cache
-    if fx_cache["data"]:
+    if fx_cache["rate"]:
         return {
-            **fx_cache["data"],
+            "USD/AOA": fx_cache["rate"],
             "cached": True
         }
 
