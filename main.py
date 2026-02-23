@@ -1,10 +1,18 @@
 from fastapi import FastAPI
 import requests
 import os
+import time
 
 app = FastAPI()
 
 ALPHA_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+
+# ---- CACHE SETTINGS ----
+CACHE_DURATION = 600  # 10 minutes
+fx_cache = {
+    "data": None,
+    "timestamp": 0
+}
 
 
 @app.get("/")
@@ -16,14 +24,11 @@ def home():
 def debug():
     return {
         "api_key_loaded": ALPHA_KEY is not None,
-        "api_key_preview": ALPHA_KEY[:4] + "..." if ALPHA_KEY else None
+        "cache_active": fx_cache["data"] is not None
     }
 
 
-def fetch_fx(from_currency="USD"):
-    if not ALPHA_KEY:
-        return {"error": "API key not loaded"}
-
+def fetch_fx_from_api(from_currency="USD"):
     url = (
         "https://www.alphavantage.co/query"
         f"?function=CURRENCY_EXCHANGE_RATE"
@@ -32,41 +37,57 @@ def fetch_fx(from_currency="USD"):
         f"&apikey={ALPHA_KEY}"
     )
 
-    try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
+    response = requests.get(url, timeout=10)
+    data = response.json()
 
-        # If structure is not what we expect, return full response for diagnosis
-        if "Realtime Currency Exchange Rate" not in data:
-            return {
-                "error": "Unexpected API response",
-                "raw_response": data
-            }
+    if "Realtime Currency Exchange Rate" not in data:
+        return None
 
-        rate = float(
-            data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
-        )
+    return float(
+        data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
+    )
 
-        return {"rate": rate}
 
-    except Exception as e:
-        return {"error": str(e)}
+def get_cached_fx():
+    current_time = time.time()
+
+    # If cache exists and not expired
+    if (
+        fx_cache["data"] is not None and
+        current_time - fx_cache["timestamp"] < CACHE_DURATION
+    ):
+        return fx_cache["data"]
+
+    # Otherwise fetch fresh data
+    usd = fetch_fx_from_api("USD")
+    eur = fetch_fx_from_api("EUR")
+
+    if usd and eur:
+        fx_cache["data"] = {
+            "USD/AOA": usd,
+            "EUR/AOA": eur,
+            "cached": False
+        }
+        fx_cache["timestamp"] = current_time
+        return fx_cache["data"]
+
+    # If API fails but cache exists, serve old cache
+    if fx_cache["data"]:
+        return {
+            **fx_cache["data"],
+            "cached": True
+        }
+
+    return {"error": "Unable to fetch FX data"}
 
 
 @app.get("/fx")
 def fx():
-    usd = fetch_fx("USD")
-    eur = fetch_fx("EUR")
-
-    return {
-        "USD/AOA": usd,
-        "EUR/AOA": eur
-    }
+    return get_cached_fx()
 
 
 @app.get("/risk")
 def risk():
-    # Temporary simulated inputs
     fx_vol = 50
     commodity_vol = 40
     news_score = 30
