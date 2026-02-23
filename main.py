@@ -1,9 +1,20 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
 
 app = FastAPI()
 
+# ---- ENABLE CORS (Allows Vercel frontend to call this API) ----
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For now allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---- CACHE SETTINGS ----
 CACHE_DURATION = 600  # 10 minutes
 fx_cache = {
     "rate": None,
@@ -29,7 +40,7 @@ def fetch_usd_aoa():
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        if data["result"] != "success":
+        if data.get("result") != "success":
             return None
 
         usd_to_aoa = data["rates"].get("AOA")
@@ -46,6 +57,7 @@ def fetch_usd_aoa():
 def get_cached_fx():
     current_time = time.time()
 
+    # If cache valid, return it
     if (
         fx_cache["rate"] is not None and
         current_time - fx_cache["timestamp"] < CACHE_DURATION
@@ -55,6 +67,7 @@ def get_cached_fx():
             "cached": True
         }
 
+    # Otherwise fetch fresh data
     fresh_rate = fetch_usd_aoa()
 
     if fresh_rate:
@@ -65,6 +78,7 @@ def get_cached_fx():
             "cached": False
         }
 
+    # If API fails but we have old cache, serve old cache
     if fx_cache["rate"]:
         return {
             "USD/AOA": fx_cache["rate"],
