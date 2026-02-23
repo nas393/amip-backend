@@ -36,15 +36,17 @@ def fetch_fx(from_currency="USD"):
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        # Handle rate limit
-        if "Note" in data:
-            return {"error": "Alpha Vantage rate limit reached"}
+        # If structure is not what we expect, return full response for diagnosis
+        if "Realtime Currency Exchange Rate" not in data:
+            return {
+                "error": "Unexpected API response",
+                "raw_response": data
+            }
 
-        # Handle invalid key
-        if "Error Message" in data:
-            return {"error": "Invalid API call or key issue"}
+        rate = float(
+            data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
+        )
 
-        rate = float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
         return {"rate": rate}
 
     except Exception as e:
