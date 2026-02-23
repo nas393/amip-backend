@@ -6,31 +6,65 @@ app = FastAPI()
 
 ALPHA_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
-def get_fx_rate(from_currency="USD"):
-    url = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={from_currency}&to_currency=AOA&apikey={ALPHA_KEY}"
-    r = requests.get(url)
-    data = r.json()
-    try:
-        return float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-    except:
-        return None
 
 @app.get("/")
 def home():
     return {"message": "Angola Market Intelligence API is running"}
 
+
+@app.get("/debug")
+def debug():
+    return {
+        "api_key_loaded": ALPHA_KEY is not None,
+        "api_key_preview": ALPHA_KEY[:4] + "..." if ALPHA_KEY else None
+    }
+
+
+def fetch_fx(from_currency="USD"):
+    if not ALPHA_KEY:
+        return {"error": "API key not loaded"}
+
+    url = (
+        "https://www.alphavantage.co/query"
+        f"?function=CURRENCY_EXCHANGE_RATE"
+        f"&from_currency={from_currency}"
+        f"&to_currency=AOA"
+        f"&apikey={ALPHA_KEY}"
+    )
+
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+
+        # Handle rate limit
+        if "Note" in data:
+            return {"error": "Alpha Vantage rate limit reached"}
+
+        # Handle invalid key
+        if "Error Message" in data:
+            return {"error": "Invalid API call or key issue"}
+
+        rate = float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
+        return {"rate": rate}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/fx")
 def fx():
-    usd = get_fx_rate("USD")
-    eur = get_fx_rate("EUR")
+    usd = fetch_fx("USD")
+    eur = fetch_fx("EUR")
+
     return {
         "USD/AOA": usd,
         "EUR/AOA": eur
     }
 
+
 @app.get("/risk")
 def risk():
-    # Temporary static logic
+    # Temporary simulated inputs
     fx_vol = 50
     commodity_vol = 40
     news_score = 30
