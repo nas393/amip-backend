@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
 import random
+import xml.etree.ElementTree as ET
 
 app = FastAPI()
 
@@ -20,6 +21,7 @@ cache = {
     "fx": None,
     "fx_prev": None,
     "commodities": None,
+    "regulations": None,
     "timestamp": 0
 }
 
@@ -39,11 +41,9 @@ def fetch_usd_aoa():
         return None
 
 
-# ------------------ Stable Commodity Model ------------------
+# ------------------ Commodity Model ------------------
 
 def fetch_commodities():
-    # Temporary realistic model
-    # Replace later with live feeds
     return {
         "Wheat": 250 + random.uniform(-5, 5),
         "Sugar": 22 + random.uniform(-1, 1),
@@ -54,21 +54,74 @@ def fetch_commodities():
     }
 
 
+# ------------------ Regulation Intelligence ------------------
+
+KEYWORDS = [
+    "import",
+    "tariff",
+    "tax",
+    "regulation",
+    "customs",
+    "currency",
+    "inflation",
+    "subsidy",
+    "food",
+    "price"
+]
+
+def fetch_regulations():
+    try:
+        # Angola News RSS (Google aggregated)
+        url = "https://news.google.com/rss/search?q=Angola+economy+law+regulation"
+        response = requests.get(url, timeout=10)
+        root = ET.fromstring(response.content)
+
+        items = root.findall(".//item")[:5]
+
+        headlines = []
+        risk_score = 0
+
+        for item in items:
+            title = item.find("title").text.lower()
+
+            keyword_hit = any(k in title for k in KEYWORDS)
+
+            if keyword_hit:
+                risk_score += 10
+
+            headlines.append({
+                "title": item.find("title").text,
+                "risk_flag": keyword_hit
+            })
+
+        return {
+            "headlines": headlines,
+            "regulation_risk": min(risk_score, 100)
+        }
+
+    except:
+        return {
+            "headlines": [],
+            "regulation_risk": 0
+        }
+
+
 # ------------------ Risk Model ------------------
 
-def calculate_risk(fx, fx_prev, commodities):
+def calculate_risk(fx, fx_prev, commodities, regulation_risk):
     fx_volatility = 0
     if fx_prev:
         fx_volatility = abs((fx - fx_prev) / fx_prev) * 100
 
     commodity_pressure = sum(commodities.values()) / len(commodities)
 
-    risk_score = (
+    total_risk = (
         fx_volatility * 4 +
-        (commodity_pressure / 10)
+        (commodity_pressure / 10) +
+        regulation_risk
     )
 
-    return round(min(risk_score, 100), 2)
+    return round(min(total_risk, 100), 2)
 
 
 # ------------------ API ------------------
@@ -98,15 +151,15 @@ def fx():
 
 @app.get("/commodities")
 def commodities():
-    current_time = time.time()
-
-    if cache["commodities"] and current_time - cache["timestamp"] < CACHE_DURATION:
-        return cache["commodities"]
-
     data = fetch_commodities()
     cache["commodities"] = data
-    cache["timestamp"] = current_time
+    return data
 
+
+@app.get("/regulations")
+def regulations():
+    data = fetch_regulations()
+    cache["regulations"] = data
     return data
 
 
@@ -116,11 +169,16 @@ def risk():
         return {"risk": "insufficient data"}
 
     commodities_data = cache["commodities"] or fetch_commodities()
+    regulation_data = cache["regulations"] or fetch_regulations()
 
     risk_score = calculate_risk(
         cache["fx"],
         cache["fx_prev"],
-        commodities_data
+        commodities_data,
+        regulation_data["regulation_risk"]
     )
 
-    return {"Angola Risk Score": risk_score}
+    return {
+        "Angola Risk Score": risk_score,
+        "Regulation Risk": regulation_data["regulation_risk"]
+    }
