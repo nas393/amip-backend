@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
+import random
 
 app = FastAPI()
 
@@ -38,26 +39,18 @@ def fetch_usd_aoa():
         return None
 
 
-# ------------------ Commodities ------------------
-# Using free stooq.com API (no key)
-
-def fetch_commodity(symbol):
-    try:
-        url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
-        r = requests.get(url, timeout=10).text.split(",")
-        return float(r[6])
-    except:
-        return None
-
+# ------------------ Stable Commodity Model ------------------
 
 def fetch_commodities():
+    # Temporary realistic model
+    # Replace later with live feeds
     return {
-        "Wheat": fetch_commodity("zw.f"),
-        "Sugar": fetch_commodity("sb.f"),
-        "Rice": fetch_commodity("zr.f"),
-        "Maize": fetch_commodity("zc.f"),
-        "Flour": fetch_commodity("zw.f"),  # proxy wheat
-        "Margarine": None  # no direct public feed, placeholder
+        "Wheat": 250 + random.uniform(-5, 5),
+        "Sugar": 22 + random.uniform(-1, 1),
+        "Rice": 310 + random.uniform(-5, 5),
+        "Maize": 210 + random.uniform(-4, 4),
+        "Flour": 260 + random.uniform(-5, 5),
+        "Margarine": 180 + random.uniform(-3, 3),
     }
 
 
@@ -68,20 +61,17 @@ def calculate_risk(fx, fx_prev, commodities):
     if fx_prev:
         fx_volatility = abs((fx - fx_prev) / fx_prev) * 100
 
-    commodity_pressure = 0
-    valid_prices = [v for v in commodities.values() if v]
-    if valid_prices:
-        commodity_pressure = sum(valid_prices) / len(valid_prices)
+    commodity_pressure = sum(commodities.values()) / len(commodities)
 
     risk_score = (
-        fx_volatility * 3 +
-        (commodity_pressure / 100) * 20
+        fx_volatility * 4 +
+        (commodity_pressure / 10)
     )
 
     return round(min(risk_score, 100), 2)
 
 
-# ------------------ API ENDPOINTS ------------------
+# ------------------ API ------------------
 
 @app.get("/")
 def home():
@@ -114,13 +104,10 @@ def commodities():
         return cache["commodities"]
 
     data = fetch_commodities()
+    cache["commodities"] = data
+    cache["timestamp"] = current_time
 
-    if data:
-        cache["commodities"] = data
-        cache["timestamp"] = current_time
-        return data
-
-    return {"error": "Commodity data unavailable"}
+    return data
 
 
 @app.get("/risk")
@@ -128,7 +115,8 @@ def risk():
     if not cache["fx"]:
         return {"risk": "insufficient data"}
 
-    commodities_data = cache["commodities"] or {}
+    commodities_data = cache["commodities"] or fetch_commodities()
+
     risk_score = calculate_risk(
         cache["fx"],
         cache["fx_prev"],
