@@ -1,11 +1,8 @@
 from fastapi import FastAPI
 import requests
-import os
 import time
 
 app = FastAPI()
-
-ALPHA_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
 # ---- CACHE SETTINGS ----
 CACHE_DURATION = 600  # 10 minutes
@@ -23,55 +20,58 @@ def home():
 @app.get("/debug")
 def debug():
     return {
-        "api_key_loaded": ALPHA_KEY is not None,
         "cache_active": fx_cache["data"] is not None
     }
 
 
-def fetch_fx_from_api(from_currency="USD"):
-    url = (
-        "https://www.alphavantage.co/query"
-        f"?function=CURRENCY_EXCHANGE_RATE"
-        f"&from_currency={from_currency}"
-        f"&to_currency=AOA"
-        f"&apikey={ALPHA_KEY}"
-    )
-
+def fetch_fx_from_api():
+    url = "https://api.exchangerate.host/latest?base=USD&symbols=AOA"
     response = requests.get(url, timeout=10)
     data = response.json()
 
-    if "Realtime Currency Exchange Rate" not in data:
+    if "rates" not in data or "AOA" not in data["rates"]:
         return None
 
-    return float(
-        data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
-    )
+    usd_to_aoa = data["rates"]["AOA"]
+
+    # Now fetch EUR
+    url_eur = "https://api.exchangerate.host/latest?base=EUR&symbols=AOA"
+    response_eur = requests.get(url_eur, timeout=10)
+    data_eur = response_eur.json()
+
+    if "rates" not in data_eur or "AOA" not in data_eur["rates"]:
+        return None
+
+    eur_to_aoa = data_eur["rates"]["AOA"]
+
+    return {
+        "USD/AOA": round(usd_to_aoa, 2),
+        "EUR/AOA": round(eur_to_aoa, 2)
+    }
 
 
 def get_cached_fx():
     current_time = time.time()
 
-    # If cache exists and not expired
     if (
         fx_cache["data"] is not None and
         current_time - fx_cache["timestamp"] < CACHE_DURATION
     ):
-        return fx_cache["data"]
+        return {
+            **fx_cache["data"],
+            "cached": True
+        }
 
-    # Otherwise fetch fresh data
-    usd = fetch_fx_from_api("USD")
-    eur = fetch_fx_from_api("EUR")
+    fresh_data = fetch_fx_from_api()
 
-    if usd and eur:
-        fx_cache["data"] = {
-            "USD/AOA": usd,
-            "EUR/AOA": eur,
+    if fresh_data:
+        fx_cache["data"] = fresh_data
+        fx_cache["timestamp"] = current_time
+        return {
+            **fresh_data,
             "cached": False
         }
-        fx_cache["timestamp"] = current_time
-        return fx_cache["data"]
 
-    # If API fails but cache exists, serve old cache
     if fx_cache["data"]:
         return {
             **fx_cache["data"],
