@@ -1,12 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+import sqlite3
 import time
-import random
+import hashlib
+import secrets
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 app = FastAPI()
 
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,170 +19,206 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CACHE_DURATION = 600
+# ---------------- DATABASE ----------------
+conn = sqlite3.connect("intelligence.db", check_same_thread=False)
+cursor = conn.cursor()
 
-cache = {
-    "fx": None,
-    "fx_prev": None,
-    "commodities": None,
-    "regulations": None,
-    "timestamp": 0
-}
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT
+)
+""")
 
-# ------------------ FX ------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS fx_history (
+    timestamp TEXT,
+    value REAL
+)
+""")
 
-def fetch_usd_aoa():
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS commodity_history (
+    timestamp TEXT,
+    wheat REAL,
+    sugar REAL,
+    rice REAL,
+    maize REAL,
+    flour REAL,
+    margarine REAL
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS regulation_history (
+    timestamp TEXT,
+    risk_score INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS risk_history (
+    timestamp TEXT,
+    fx_risk REAL,
+    commodity_risk REAL,
+    regulation_risk REAL,
+    total_risk REAL
+)
+""")
+
+conn.commit()
+
+# ---------------- INITIAL USERS ----------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def create_user(username, password):
     try:
-        url = "https://open.er-api.com/v6/latest/USD"
-        r = requests.get(url, timeout=10).json()
-
-        if r.get("result") != "success":
-            return None
-
-        return round(r["rates"].get("AOA"), 2)
-
+        cursor.execute("INSERT INTO users VALUES (?, ?)",
+                       (username, hash_password(password)))
+        conn.commit()
     except:
-        return None
+        pass
 
+create_user("Nassim", "101112")
+create_user("user", "qwerty1")
 
-# ------------------ Commodity Model ------------------
+# ---------------- AUTH ----------------
+tokens = {}
+
+@app.post("/login")
+def login(data: dict):
+    username = data.get("username")
+    password = data.get("password")
+
+    cursor.execute("SELECT password_hash FROM users WHERE username=?",
+                   (username,))
+    result = cursor.fetchone()
+
+    if not result or result[0] != hash_password(password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = secrets.token_hex(16)
+    tokens[token] = username
+    return {"token": token}
+
+def authenticate(authorization: str = Header(None)):
+    if not authorization or authorization not in tokens:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+# ---------------- FX ----------------
+def fetch_usd_aoa():
+    url = "https://open.er-api.com/v6/latest/USD"
+    r = requests.get(url, timeout=10).json()
+    return r["rates"]["AOA"]
+
+# ---------------- COMMODITIES ----------------
+import random
 
 def fetch_commodities():
     return {
-        "Wheat": 250 + random.uniform(-5, 5),
-        "Sugar": 22 + random.uniform(-1, 1),
-        "Rice": 310 + random.uniform(-5, 5),
-        "Maize": 210 + random.uniform(-4, 4),
-        "Flour": 260 + random.uniform(-5, 5),
-        "Margarine": 180 + random.uniform(-3, 3),
+        "wheat": 250 + random.uniform(-5, 5),
+        "sugar": 22 + random.uniform(-1, 1),
+        "rice": 310 + random.uniform(-5, 5),
+        "maize": 210 + random.uniform(-4, 4),
+        "flour": 260 + random.uniform(-5, 5),
+        "margarine": 180 + random.uniform(-3, 3),
     }
 
+# ---------------- REGULATIONS ----------------
+KEYWORDS = ["import", "tariff", "tax", "customs", "ban", "regulation"]
 
-# ------------------ Regulation Intelligence ------------------
+def fetch_regulation_risk():
+    url = "https://news.google.com/rss/search?q=Angola+law+economy"
+    response = requests.get(url, timeout=10)
+    root = ET.fromstring(response.content)
+    items = root.findall(".//item")[:5]
 
-KEYWORDS = [
-    "import",
-    "tariff",
-    "tax",
-    "regulation",
-    "customs",
-    "currency",
-    "inflation",
-    "subsidy",
-    "food",
-    "price"
-]
+    risk_score = 0
 
-def fetch_regulations():
-    try:
-        # Angola News RSS (Google aggregated)
-        url = "https://news.google.com/rss/search?q=Angola+economy+law+regulation"
-        response = requests.get(url, timeout=10)
-        root = ET.fromstring(response.content)
+    for item in items:
+        title = item.find("title").text.lower()
+        if any(k in title for k in KEYWORDS):
+            risk_score += 15
 
-        items = root.findall(".//item")[:5]
+    return min(risk_score, 100)
 
-        headlines = []
-        risk_score = 0
+# ---------------- RISK ENGINE ----------------
+def calculate_risk(fx_value, commodities, regulation_risk):
+    fx_risk = abs(fx_value - 900) / 10
+    commodity_risk = sum(commodities.values()) / 50
+    total = fx_risk + commodity_risk + regulation_risk
+    return fx_risk, commodity_risk, regulation_risk, min(total, 100)
 
-        for item in items:
-            title = item.find("title").text.lower()
-
-            keyword_hit = any(k in title for k in KEYWORDS)
-
-            if keyword_hit:
-                risk_score += 10
-
-            headlines.append({
-                "title": item.find("title").text,
-                "risk_flag": keyword_hit
-            })
-
-        return {
-            "headlines": headlines,
-            "regulation_risk": min(risk_score, 100)
-        }
-
-    except:
-        return {
-            "headlines": [],
-            "regulation_risk": 0
-        }
-
-
-# ------------------ Risk Model ------------------
-
-def calculate_risk(fx, fx_prev, commodities, regulation_risk):
-    fx_volatility = 0
-    if fx_prev:
-        fx_volatility = abs((fx - fx_prev) / fx_prev) * 100
-
-    commodity_pressure = sum(commodities.values()) / len(commodities)
-
-    total_risk = (
-        fx_volatility * 4 +
-        (commodity_pressure / 10) +
-        regulation_risk
-    )
-
-    return round(min(total_risk, 100), 2)
-
-
-# ------------------ API ------------------
-
-@app.get("/")
-def home():
-    return {"message": "Intelligence Engine Active"}
-
-
+# ---------------- API ENDPOINTS ----------------
 @app.get("/fx")
-def fx():
-    current_time = time.time()
+def fx(user=Depends(authenticate)):
+    value = fetch_usd_aoa()
+    timestamp = datetime.utcnow().isoformat()
 
-    if cache["fx"] and current_time - cache["timestamp"] < CACHE_DURATION:
-        return {"USD/AOA": cache["fx"], "cached": True}
+    cursor.execute("INSERT INTO fx_history VALUES (?, ?)",
+                   (timestamp, value))
+    conn.commit()
 
-    fx_value = fetch_usd_aoa()
-
-    if fx_value:
-        cache["fx_prev"] = cache["fx"]
-        cache["fx"] = fx_value
-        cache["timestamp"] = current_time
-        return {"USD/AOA": fx_value, "cached": False}
-
-    return {"error": "FX unavailable"}
-
+    return {"USD/AOA": round(value, 2)}
 
 @app.get("/commodities")
-def commodities():
+def commodities(user=Depends(authenticate)):
     data = fetch_commodities()
-    cache["commodities"] = data
-    return data
+    timestamp = datetime.utcnow().isoformat()
 
+    cursor.execute("""
+        INSERT INTO commodity_history VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        timestamp,
+        data["wheat"],
+        data["sugar"],
+        data["rice"],
+        data["maize"],
+        data["flour"],
+        data["margarine"],
+    ))
+    conn.commit()
+
+    return data
 
 @app.get("/regulations")
-def regulations():
-    data = fetch_regulations()
-    cache["regulations"] = data
-    return data
+def regulations(user=Depends(authenticate)):
+    risk_score = fetch_regulation_risk()
+    timestamp = datetime.utcnow().isoformat()
 
+    cursor.execute("INSERT INTO regulation_history VALUES (?, ?)",
+                   (timestamp, risk_score))
+    conn.commit()
+
+    return {"regulation_risk": risk_score}
 
 @app.get("/risk")
-def risk():
-    if not cache["fx"]:
-        return {"risk": "insufficient data"}
+def risk(user=Depends(authenticate)):
+    fx_value = fetch_usd_aoa()
+    commodities = fetch_commodities()
+    regulation_risk = fetch_regulation_risk()
 
-    commodities_data = cache["commodities"] or fetch_commodities()
-    regulation_data = cache["regulations"] or fetch_regulations()
-
-    risk_score = calculate_risk(
-        cache["fx"],
-        cache["fx_prev"],
-        commodities_data,
-        regulation_data["regulation_risk"]
+    fx_risk, commodity_risk, reg_risk, total = calculate_risk(
+        fx_value, commodities, regulation_risk
     )
 
+    timestamp = datetime.utcnow().isoformat()
+
+    cursor.execute("""
+        INSERT INTO risk_history VALUES (?, ?, ?, ?, ?)
+    """, (
+        timestamp,
+        fx_risk,
+        commodity_risk,
+        reg_risk,
+        total
+    ))
+    conn.commit()
+
     return {
-        "Angola Risk Score": risk_score,
-        "Regulation Risk": regulation_data["regulation_risk"]
+        "fx_risk": round(fx_risk, 2),
+        "commodity_risk": round(commodity_risk, 2),
+        "regulation_risk": reg_risk,
+        "total_risk": round(total, 2)
     }
